@@ -3,23 +3,21 @@ import cv2
 import numpy as np
 import tempfile
 import time
+from collections import deque
 
 # =========================
 # Streamlit設定
 # =========================
-st.set_page_config(page_title="転倒検知（天井対応）", layout="wide")
-st.title("📹 転倒検知システム（平面・天井カメラ対応）")
+st.set_page_config(page_title="転倒検知（歩行対応）", layout="wide")
+st.title("📹 転倒検知システム（平面・天井・歩行対応）")
 
 st.markdown("""
-### 判定ロジック
-- 人の **移動量（速度）**
-- **急激な移動 → 長時間停止**
-で転倒を検知します。
+### 判定ロジック（実運用レベル）
+1. **移動量（速度）を常時計測**
+2. **急減速を転倒トリガー** とする
+3. **低移動状態が継続** → 転倒確定
 """)
 
-# =========================
-# 動画アップロード
-# =========================
 uploaded_file = st.file_uploader(
     "天井カメラの動画をアップロードしてください",
     type=["mp4", "avi", "mov"]
@@ -35,13 +33,18 @@ frame_area = st.image([])
 status_area = st.empty()
 
 # =========================
-# パラメータ
+# パラメータ（重要）
 # =========================
-MOVE_THRESHOLD = 40        # 急激な移動量
-STOP_TIME_THRESHOLD = 3.0 # 秒
+LOW_MOVE_THRESHOLD = 8        # ほぼ止まっている
+HIGH_MOVE_THRESHOLD = 25     # 歩行
+DECEL_THRESHOLD = 15         # 急減速
+CONFIRM_TIME = 2.5           # 秒
+
+speed_history = deque(maxlen=5)
 
 prev_center = None
-fall_candidate_time = None
+fall_trigger_time = None
+fallen = False
 
 # =========================
 # 動画処理
@@ -74,41 +77,49 @@ if uploaded_file is not None:
 
         current_center = None
 
-        for (x, y, w, h) in boxes:
-            cx = x + w // 2
-            cy = y + h // 2
-            current_center = (cx, cy)
+        if len(boxes) > 0:
+            x, y, w, h = boxes[0]
+            current_center = (x + w // 2, y + h // 2)
 
-            cv2.rectangle(frame, (x, y), (x+w, y+h), (255, 255, 0), 2)
+            cv2.rectangle(frame, (x, y), (x + w, y + h), (255, 255, 0), 2)
             cv2.circle(frame, current_center, 5, (0, 0, 255), -1)
 
-        # ===== 動き解析 =====
+        # ===== 速度計算 =====
+        speed = 0
         if prev_center and current_center:
-            move_dist = np.linalg.norm(
+            speed = np.linalg.norm(
                 np.array(current_center) - np.array(prev_center)
             )
 
-            # 急激な移動 → 転倒候補
-            if move_dist > MOVE_THRESHOLD:
-                fall_candidate_time = time.time()
+        speed_history.append(speed)
+        avg_speed = np.mean(speed_history) if speed_history else 0
 
-        # ===== 停止時間判定 =====
-        if fall_candidate_time:
-            if current_center and prev_center:
-                still_dist = np.linalg.norm(
-                    np.array(current_center) - np.array(prev_center)
-                )
+        # ===== 転倒トリガー（急減速）=====
+        if avg_speed > HIGH_MOVE_THRESHOLD:
+            walking = True
+        else:
+            walking = False
 
-                if still_dist < 5:
-                    if time.time() - fall_candidate_time > STOP_TIME_THRESHOLD:
-                        status_area.error("⚠️ 転倒を検知しました")
-                else:
-                    fall_candidate_time = None
+        if walking and avg_speed < DECEL_THRESHOLD:
+            fall_trigger_time = time.time()
+
+        # ===== 転倒確定判定 =====
+        if fall_trigger_time:
+            if avg_speed < LOW_MOVE_THRESHOLD:
+                if time.time() - fall_trigger_time > CONFIRM_TIME:
+                    fallen = True
+            else:
+                # 再び歩いたらリセット
+                fall_trigger_time = None
+                fallen = False
+
+        # ===== 表示 =====
+        if fallen:
+            status_area.error("⚠️ 歩行中の転倒を検知しました")
         else:
             status_area.success("✅ 正常")
 
         prev_center = current_center
-
         frame_area.image(frame, channels="BGR")
 
     cap.release()
