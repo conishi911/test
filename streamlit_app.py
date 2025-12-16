@@ -3,47 +3,30 @@ import cv2
 import numpy as np
 import tempfile
 import time
-from collections import deque
 
-# =========================
-# Streamlit設定
-# =========================
-st.set_page_config(page_title="転倒検知（歩行対応）", layout="wide")
-st.title("📹 転倒検知システム（平面・天井・歩行対応）")
-
-st.markdown("""
-### 判定ロジック（実運用レベル）
-1. **移動量（速度）を常時計測**
-2. **急減速を転倒トリガー** とする
-3. **低移動状態が継続** → 転倒確定
-""")
+st.set_page_config(page_title="転倒検知（部分遮蔽対応）", layout="wide")
+st.title("📹 転倒検知システム（部分遮蔽・歩行対応）")
 
 uploaded_file = st.file_uploader(
-    "天井カメラの動画をアップロードしてください",
+    "動画をアップロードしてください",
     type=["mp4", "avi", "mov"]
 )
-
-# =========================
-# 人検出（HOG）
-# =========================
-hog = cv2.HOGDescriptor()
-hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
 
 frame_area = st.image([])
 status_area = st.empty()
 
 # =========================
-# パラメータ（重要）
+# パラメータ
 # =========================
-LOW_MOVE_THRESHOLD = 8        # ほぼ止まっている
-HIGH_MOVE_THRESHOLD = 25     # 歩行
-DECEL_THRESHOLD = 15         # 急減速
-CONFIRM_TIME = 2.5           # 秒
+CONFIRM_TIME = 2.5       # 秒
+MOVEMENT_THRESHOLD = 3   # 光学フローの閾値
+STOP_TIME_THRESHOLD = 2.0
 
-speed_history = deque(maxlen=5)
-
-prev_center = None
-fall_trigger_time = None
+# =========================
+# 状態変数
+# =========================
+prev_gray = None
+still_start_time = None
 fallen = False
 
 # =========================
@@ -52,7 +35,6 @@ fallen = False
 if uploaded_file is not None:
     tfile = tempfile.NamedTemporaryFile(delete=False)
     tfile.write(uploaded_file.read())
-
     cap = cv2.VideoCapture(tfile.name)
 
     if not cap.isOpened():
@@ -67,59 +49,34 @@ if uploaded_file is not None:
             break
 
         frame = cv2.resize(frame, (640, 360))
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-        boxes, _ = hog.detectMultiScale(
-            frame,
-            winStride=(8, 8),
-            padding=(8, 8),
-            scale=1.05
-        )
-
-        current_center = None
-
-        if len(boxes) > 0:
-            x, y, w, h = boxes[0]
-            current_center = (x + w // 2, y + h // 2)
-
-            cv2.rectangle(frame, (x, y), (x + w, y + h), (255, 255, 0), 2)
-            cv2.circle(frame, current_center, 5, (0, 0, 255), -1)
-
-        # ===== 速度計算 =====
-        speed = 0
-        if prev_center and current_center:
-            speed = np.linalg.norm(
-                np.array(current_center) - np.array(prev_center)
+        movement = 0
+        if prev_gray is not None:
+            flow = cv2.calcOpticalFlowFarneback(
+                prev_gray, gray,
+                None,
+                0.5, 3, 15, 3, 5, 1.2, 0
             )
+            mag, ang = cv2.cartToPolar(flow[...,0], flow[...,1])
+            movement = np.mean(mag)
 
-        speed_history.append(speed)
-        avg_speed = np.mean(speed_history) if speed_history else 0
-
-        # ===== 転倒トリガー（急減速）=====
-        if avg_speed > HIGH_MOVE_THRESHOLD:
-            walking = True
-        else:
-            walking = False
-
-        if walking and avg_speed < DECEL_THRESHOLD:
-            fall_trigger_time = time.time()
-
-        # ===== 転倒確定判定 =====
-        if fall_trigger_time:
-            if avg_speed < LOW_MOVE_THRESHOLD:
-                if time.time() - fall_trigger_time > CONFIRM_TIME:
+            if movement < MOVEMENT_THRESHOLD:
+                if still_start_time is None:
+                    still_start_time = time.time()
+                elif time.time() - still_start_time > STOP_TIME_THRESHOLD:
                     fallen = True
             else:
-                # 再び歩いたらリセット
-                fall_trigger_time = None
+                still_start_time = None
                 fallen = False
 
         # ===== 表示 =====
         if fallen:
-            status_area.error("⚠️ 歩行中の転倒を検知しました")
+            status_area.error("⚠️ 転倒を検知しました（部分遮蔽対応）")
         else:
             status_area.success("✅ 正常")
 
-        prev_center = current_center
+        prev_gray = gray
         frame_area.image(frame, channels="BGR")
 
     cap.release()
