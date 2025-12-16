@@ -2,10 +2,9 @@ import streamlit as st
 import cv2
 import numpy as np
 import tempfile
-import time
 
-st.set_page_config(page_title="転倒検知＋倒れ時間計測", layout="wide")
-st.title("📹 転倒検知システム（部分遮蔽対応・倒れ時間計測）")
+st.set_page_config(page_title="転倒検知＋正確な倒れ時間", layout="wide")
+st.title("📹 転倒検知システム（部分遮蔽対応・正確時間計測）")
 
 uploaded_file = st.file_uploader(
     "動画をアップロードしてください",
@@ -20,15 +19,15 @@ time_area = st.empty()
 # パラメータ
 # =========================
 MOVEMENT_THRESHOLD = 3       # 光学フローの閾値
-STOP_TIME_THRESHOLD = 1.0    # 秒（倒れ開始とみなす最低時間）
+STOP_FRAMES_THRESHOLD = 3    # 倒れ開始判定に必要な連続フレーム数
 
 # =========================
 # 状態変数
 # =========================
 prev_gray = None
-still_start_time = None
+still_frame_count = 0
 fallen = False
-fall_start_time = None
+fall_frames_count = 0
 
 # =========================
 # 動画処理
@@ -42,7 +41,8 @@ if uploaded_file is not None:
         st.error("動画を開けません")
         st.stop()
 
-    st.success("解析を開始します")
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    st.success(f"解析を開始します（FPS={fps:.1f}）")
 
     while cap.isOpened():
         ret, frame = cap.read()
@@ -64,24 +64,22 @@ if uploaded_file is not None:
 
             # ===== 転倒判定 =====
             if movement < MOVEMENT_THRESHOLD:
-                if still_start_time is None:
-                    still_start_time = time.time()
-                elif time.time() - still_start_time > STOP_TIME_THRESHOLD:
+                still_frame_count += 1
+                if still_frame_count >= STOP_FRAMES_THRESHOLD:
                     if not fallen:
-                        # 倒れ状態開始
-                        fall_start_time = time.time()
                         fallen = True
+                        fall_frames_count = 0
             else:
-                # 動いている → 倒れ解除
-                still_start_time = None
+                still_frame_count = 0
                 fallen = False
-                fall_start_time = None
+                fall_frames_count = 0
 
-        # ===== 表示 =====
+        # ===== 倒れ時間計算 =====
         if fallen:
+            fall_frames_count += 1
+            fall_time_sec = fall_frames_count / fps
             status_area.error("⚠️ 転倒を検知しました（部分遮蔽対応）")
-            elapsed = time.time() - fall_start_time
-            time_area.info(f"倒れている時間: {elapsed:.1f} 秒")
+            time_area.info(f"倒れている時間: {fall_time_sec:.2f} 秒")
         else:
             status_area.success("✅ 正常")
             time_area.empty()
