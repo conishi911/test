@@ -4,8 +4,8 @@ import numpy as np
 import tempfile
 import time
 
-st.set_page_config(page_title="転倒検知（部分遮蔽対応）", layout="wide")
-st.title("📹 転倒検知システム（部分遮蔽・歩行対応）")
+st.set_page_config(page_title="転倒検知＋倒れ時間計測", layout="wide")
+st.title("📹 転倒検知システム（部分遮蔽対応・倒れ時間計測）")
 
 uploaded_file = st.file_uploader(
     "動画をアップロードしてください",
@@ -14,13 +14,13 @@ uploaded_file = st.file_uploader(
 
 frame_area = st.image([])
 status_area = st.empty()
+time_area = st.empty()
 
 # =========================
 # パラメータ
 # =========================
-CONFIRM_TIME = 2.5       # 秒
-MOVEMENT_THRESHOLD = 3   # 光学フローの閾値
-STOP_TIME_THRESHOLD = 2.0
+MOVEMENT_THRESHOLD = 3       # 光学フローの閾値
+STOP_TIME_THRESHOLD = 1.0    # 秒（倒れ開始とみなす最低時間）
 
 # =========================
 # 状態変数
@@ -28,6 +28,7 @@ STOP_TIME_THRESHOLD = 2.0
 prev_gray = None
 still_start_time = None
 fallen = False
+fall_start_time = None
 
 # =========================
 # 動画処理
@@ -61,20 +62,29 @@ if uploaded_file is not None:
             mag, ang = cv2.cartToPolar(flow[...,0], flow[...,1])
             movement = np.mean(mag)
 
+            # ===== 転倒判定 =====
             if movement < MOVEMENT_THRESHOLD:
                 if still_start_time is None:
                     still_start_time = time.time()
                 elif time.time() - still_start_time > STOP_TIME_THRESHOLD:
-                    fallen = True
+                    if not fallen:
+                        # 倒れ状態開始
+                        fall_start_time = time.time()
+                        fallen = True
             else:
+                # 動いている → 倒れ解除
                 still_start_time = None
                 fallen = False
+                fall_start_time = None
 
         # ===== 表示 =====
         if fallen:
             status_area.error("⚠️ 転倒を検知しました（部分遮蔽対応）")
+            elapsed = time.time() - fall_start_time
+            time_area.info(f"倒れている時間: {elapsed:.1f} 秒")
         else:
             status_area.success("✅ 正常")
+            time_area.empty()
 
         prev_gray = gray
         frame_area.image(frame, channels="BGR")
